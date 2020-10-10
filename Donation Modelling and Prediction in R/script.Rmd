@@ -1,0 +1,275 @@
+---
+title: "Wesbrook"
+author: "Zongqi Wang"
+date: "11/9/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setting up
+
+```{r, message =FALSE, warning=FALSE}
+library("dplyr")
+library("car")
+library("forcats")
+library("rpart")
+library("rpart.plot")
+library("nnet")
+library("foreign")
+library("corrplot")
+library("randomForest")
+library("pdp")
+library(MASS)
+library("ggplot2")
+source("BCA_functions_source_file.R")
+Wesbrook <- read.dbf("wesbrook.dbf")
+```
+
+### creating samples
+```{r}
+
+Wesbrook$Sample <- create.samples(Wesbrook, est = 0.7, val = 0.3, rand.seed = 1)
+
+```
+
+
+## Engineering Feature
+```{r}
+Wesbrook$YRFDGR <- (1999 - Wesbrook$FRSTYEAR)
+Wesbrook$YRLDGR <- (1999 - Wesbrook$GRADYR1)
+
+Wesbrook$FRSTYEAR <- NULL
+Wesbrook$GRADYR1 <- NULL
+
+variable.summary(Wesbrook) 
+```
+
+```{r}
+
+Wesbrook$MAJOR1 <- NULL
+Wesbrook$DEPT1 <- fct_explicit_na(Wesbrook$DEPT1, na_level = "ND")
+Wesbrook$FACULTY1 <- fct_explicit_na(Wesbrook$FACULTY1, na_level = "ND")
+
+sum(is.na(Wesbrook$DEPT1))
+sum(is.na(Wesbrook$FACULTY1))
+
+Wesbrook$YRFDGR <- if_else(condition = is.na(Wesbrook$YRFDGR),
+true = 0,
+false = Wesbrook$YRFDGR)
+
+
+Wesbrook$YRLDGR <- if_else(condition = is.na(Wesbrook$YRLDGR),
+true = 0,
+false = Wesbrook$YRLDGR)
+
+Wesbrook$MARITAL <- NULL
+Wesbrook$BIGBLOCK <- NULL
+Wesbrook$TOTLGIVE <- NULL
+  
+row.names(Wesbrook) <- Wesbrook$ID # Set "ID" as record name
+Wesbrook$ID <- NULL
+
+Wesbrook2 <- na.omit(Wesbrook)
+glimpse(Wesbrook2)
+```
+
+## Exploratory analysis
+```{r}
+mod.fit.income <- glm(WESBROOK ~ SD_INC, 
+                      data = filter(Wesbrook2, Sample == "Estimation" ),
+                      family = binomial(logit))
+summary(mod.fit.income)
+summary(Wesbrook2$SD_INC)
+newdat <- data.frame(SD_INC=seq(min(Wesbrook2$SD_INC), max(Wesbrook2$SD_INC),len=100))
+newdat$result = predict(mod.fit.income, newdata=newdat, type="response")
+plot(result ~ SD_INC, data=newdat, col="red4")
+
+
+df <- data.frame(Wesbrook2$WESBROOK, Wesbrook2$FACULTY1)
+colnames(df) <- c("Donation", "Faculty")
+df <- df %>% group_by(Faculty) %>% count(Donation)
+head(df)
+ggplot(df, alpha = 0.2, aes(x = Faculty, y = n, fill = Donation))+geom_bar(stat = "identity")
+
+mod.fit.faculty <- glm(WESBROOK ~ FACULTY1, 
+                      data = filter(Wesbrook2, Sample == "Estimation" ),
+                      family = binomial(logit))
+
+summary(mod.fit.faculty)
+summary(Wesbrook2$FACULTY1)
+facdata <- data.frame(levels(Wesbrook2$FACULTY1))
+colnames(facdata) <- "FACULTY1"
+facdata$result = predict(mod.fit.faculty, newdata=facdata, type="response")
+plot(result ~ FACULTY1, data=facdata, col="red4")
+
+
+
+write.csv(facdata, "faculty.csv")
+table(Wesbrook2$DEPT1)
+
+
+
+summary(Wesbrook2$DWEL_VAL)
+mod.fit.dwel <- glm(WESBROOK ~ DWEL_VAL, 
+                      data = filter(Wesbrook2, Sample == "Estimation" ),
+                      family = binomial(logit))
+
+
+dwel <- data.frame(DWEL_VAL=seq(min(Wesbrook2$DWEL_VAL), max(Wesbrook2$DWEL_VAL),len=100))
+dwel$result = predict(mod.fit.dwel, newdata=dwel, type="response")
+plot(result ~ DWEL_VAL, data = dwel)
+summary(mod.fit.dwel)
+
+write.csv(dwel, "dwel.csv")
+
+
+
+mod.fit.sex <- glm(SEX ~ AVE_INC, 
+                      data = filter(Wesbrook2, Sample == "Estimation" ),
+                      family = binomial(logit))
+
+summary(mod.fit.sex)
+sex <- data.frame(AVE_INC=seq(min(Wesbrook2$AVE_INC), max(Wesbrook2$AVE_INC),len=100))
+sex
+colnames(sex) <- "AVE_INC"
+sex$SEX = predict(mod.fit.sex, newdata=sex, type="response")
+plot(SEX ~ AVE_INC, data = sex)
+
+
+mod.fit.year <- glm(WESBROOK ~ YRFDGR, 
+                      data = filter(Wesbrook2, Sample == "Estimation" ),
+                      family = binomial(logit))
+
+yeardata <- data.frame(YRFDGR=seq(min(Wesbrook2$YRFDGR), max(Wesbrook2$YRFDGR),len=100))
+yeardata$Prob = predict(mod.fit.year, newdata=yeardata, type="response")
+plot(Prob ~ YRFDGR, data = yeardata)
+
+
+write.csv(yeardata, "years.csv")
+
+corrMatrix <- cor(select_if(Wesbrook2, is.numeric))
+
+corrplot(corrMatrix,method="number",type="lower",
+diag = FALSE,number.cex = 0.7)
+
+```
+
+### Trimming data
+```{r}
+WesForestAllv.trim <- partial(WesForestAllv, pred.var = "DWEL_VAL",
+prob = TRUE,
+which.class = 2,
+quantiles = TRUE, # prepare data trimming
+probs = seq(from = 0.0, to = 0.9, by = 0.02), # of bottom 90%
+plot= FALSE) 
+
+```
+
+### Random Forest
+```{r}
+
+WesForestAllv <- randomForest(formula = WESBROOK ~ FACULTY1 + DEPT1 +
+PARENT + CHILD + SPOUSE + SEX + FACSTAFF +
+ATHLTCS + OTHERACT + MOV_DWEL + HH_1PER +
+HH_2PER + HH_3PER + HH_45PER + AVE_INC +
+DWEL_VAL + PROV + CNDN_PCT + ENG_PCT +
+OWN_PCT + SD_INC + YRFDGR + YRLDGR,
+data = filter(Wesbrook2, Sample =="Estimation"),
+importance = TRUE,
+ntree = 500, mtry = 4)
+```
+
+```{r}
+WesNetAllv <- nnet(formula = WESBROOK ~ FACULTY1 + DEPT1 + PARENT + CHILD +
+SPOUSE + SEX + FACSTAFF + ATHLTCS + OTHERACT +
+MOV_DWEL + HH_1PER + HH_2PER + HH_3PER + HH_45PER +
+AVE_INC + DWEL_VAL + PROV + CNDN_PCT + ENG_PCT +
+OWN_PCT + SD_INC + YRFDGR + YRLDGR,
+data = filter(Wesbrook2, Sample =="Estimation"),
+decay = 0.15, size = 4)
+
+
+step1=glm(formula = WESBROOK ~ FACULTY1 + CHILD + SPOUSE + SEX + FACSTAFF +
+            ATHLTCS + HH_1PER + HH_2PER + HH_3PER + AVE_INC + DWEL_VAL +
+  SD_INC + YRFDGR, family = binomial(logit), data = filter(Wesbrook2,
+                                                         Sample == "Estimation"))
+
+step2=glm(formula = WESBROOK ~ FACULTY1 + CHILD  + SEX + FACSTAFF +
+            ATHLTCS + HH_1PER + HH_2PER + HH_3PER + AVE_INC + DWEL_VAL +
+  SD_INC + YRFDGR, family = binomial(logit), data = filter(Wesbrook2,
+                                                         Sample == "Estimation"))
+
+sp.mod <- glm(WESBROOK~SPOUSE, family = binomial(logit), data = filter(Wesbrook2,
+                                                         Sample == "Estimation"))
+
+step2 <- glm(formula = WESBROOK ~ FACULTY1 + CHILD + SPOUSE + FACSTAFF +
+            ATHLTCS + HH_1PER + HH_2PER + HH_3PER + DWEL_VAL + AVE_INC*SD_INC*SEX + YRFDGR, family = binomial(logit), data = filter(Wesbrook2,Sample == "Estimation"))
+
+step3 <- glm(formula = WESBROOK ~ FACULTY1 + CHILD + SPOUSE + FACSTAFF +
+            ATHLTCS + HH_1PER + HH_2PER + HH_3PER + DWEL_VAL + AVE_INC*log(SD_INC)*SEX + YRFDGR, family = binomial(logit), data = filter(Wesbrook2,Sample == "Estimation"))
+
+step3<- stepAIC(step3, trace = FALSE)
+```
+
+```{r message = TRUE}
+summary(step2)
+anova(step3, step2)
+
+
+Wesbrook2$score <- predict(step1, newdata = Wesbrook2, type = "response") 
+
+summary(Wesbrook2$score)
+
+Wesbrook[which(Wesbrook2$score < 0.015),]
+
+table(Wesbrook2$FACSTAFF)
+
+```
+
+### Scaling
+
+```{r}
+
+vif(step1)
+
+Reg.Mod <- glm(formula = WESBROOK ~ FACULTY1 + CHILD + SPOUSE + FACSTAFF +
+            ATHLTCS + HH_1PER + HH_2PER + HH_3PER + DWEL_VAL + SD_INC+SEX + YRFDGR, family = binomial(logit), data = filter(Wesbrook2,Sample == "Estimation"))
+vif(Reg.Mod)
+```
+
+
+```{r}
+Reg.Mod <- glm(formula = WESBROOK ~ FACULTY1 + CHILD + SPOUSE + FACSTAFF +
+            ATHLTCS + HH_1PER + HH_2PER + HH_3PER + DWEL_VAL + SD_INC+SEX + YRFDGR, family =
+              binomial(logit), data = filter(Wesbrook2,Sample == "Estimation"))
+
+
+Wesbrook2$Log.AVE_INC <- log(Wesbrook2$AVE_INC)
+Wesbrook2$Log.SD_INC <- log(Wesbrook2$SD_INC)
+
+Wesbrook2$Log.AVE_INC
+
+Reg.Mod2 <- glm(formula = WESBROOK ~ FACULTY1 + CHILD + SPOUSE + FACSTAFF + Log.SD_INC+ATHLTCS + HH_1PER + HH_2PER +
+                  HH_3PER + DWEL_VAL  + SEX + YRFDGR,
+            family = binomial(logit), data = filter(Wesbrook2,Sample == "Estimation"))
+
+WesNnet4 <- Nnet(formula = WESBROOK ~ ATHLTCS + AVE_INC + CHILD + DWEL_VAL + 
+                   FACSTAFF + FACULTY1 + HH_1PER + HH_2PER + HH_3PER + SD_INC + 
+                   SEX + SPOUSE + YRFDGR,
+                 data = filter(Wesbrook2, Sample =="Estimation"), 
+                 decay = 0.15, size = 4)
+
+Reg.Mod3 <- glm(formula = WESBROOK ~ FACULTY1 + CHILD + SPOUSE + FACSTAFF + SD_INC + I(SD_INC)^2
+                +ATHLTCS + HH_1PER + HH_2PER + AVE_INC+
+                  HH_3PER + DWEL_VAL  + SEX + YRFDGR,
+            family = binomial(logit), data = filter(Wesbrook2,Sample == "Estimation"))
+
+lift.chart(modelList = c("WesNnet4"),
+data = filter(Wesbrook2, Sample == "Validation"),
+targLevel = "Y", trueResp = 0.01,
+type = "cumulative", sub = "Validation")
+
+```
